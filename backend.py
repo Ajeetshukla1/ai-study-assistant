@@ -1,7 +1,10 @@
 """
-AI Study Assistant - Simplified Python Backend
-FastAPI server with OpenCV-based camera processing and face detection
-(MediaPipe alternative for Python 3.13 compatibility)
+AI Study Assistant - Enhanced Python Backend
+FastAPI server with advanced OpenCV-based camera processing:
+- Precise head pose estimation using PnP solver
+- Scientific Eye Aspect Ratio calculation
+- State machine with timer-based transitions
+- Session logging and analytics
 """
 
 import cv2
@@ -15,6 +18,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from datetime import datetime
 import logging
 import math
+from enhanced_detector import EnhancedStateDetector
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -31,171 +35,15 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-class OpenCVStateDetector:
-    """AI State Detection using OpenCV face and eye detection"""
-    
-    def __init__(self):
-        # Load OpenCV classifiers
-        self.face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
-        self.eye_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_eye.xml')
-        
-        # State detection thresholds
-        self.DROWSY_EYE_THRESHOLD = 0.02  # Eye area ratio threshold
-        self.DROWSY_TIME_THRESHOLD = 3.0  # seconds
-        self.DISTRACTION_FACE_THRESHOLD = 0.3  # Face position threshold
-        
-        # State timing
-        self.current_state = 'unknown'
-        self.state_start_time = datetime.now()
-        self.eye_closed_start = None
-        
-    def calculate_eye_aspect_ratio(self, eye_region: np.ndarray) -> float:
-        """Calculate simplified eye aspect ratio from eye region"""
-        if eye_region.size == 0:
-            return 0.0
-        
-        # Convert to grayscale if needed
-        if len(eye_region.shape) == 3:
-            gray = cv2.cvtColor(eye_region, cv2.COLOR_BGR2GRAY)
-        else:
-            gray = eye_region
-        
-        # Calculate the ratio of eye area to bounding box area
-        non_zero_pixels = cv2.countNonZero(gray)
-        total_pixels = gray.shape[0] * gray.shape[1]
-        
-        if total_pixels == 0:
-            return 0.0
-            
-        return non_zero_pixels / total_pixels
-    
-    def estimate_head_pose(self, face_rect: tuple, frame_shape: tuple) -> Dict[str, float]:
-        """Estimate head pose based on face position"""
-        x, y, w, h = face_rect
-        frame_height, frame_width = frame_shape[:2]
-        
-        # Calculate face center
-        face_center_x = x + w // 2
-        face_center_y = y + h // 2
-        
-        # Calculate relative position (normalized to -1 to 1)
-        relative_x = (face_center_x - frame_width // 2) / (frame_width // 2)
-        relative_y = (face_center_y - frame_height // 2) / (frame_height // 2)
-        
-        # Estimate angles based on position
-        # Yaw: left-right head movement
-        yaw = relative_x * 45  # Scale to roughly -45 to 45 degrees
-        
-        # Pitch: up-down head movement
-        pitch = relative_y * 30  # Scale to roughly -30 to 30 degrees
-        
-        # Roll: assume minimal roll for simplicity
-        roll = 0
-        
-        return {
-            'pitch': float(pitch),
-            'yaw': float(yaw),
-            'roll': float(roll)
-        }
-    
-    def detect_state(self, frame: np.ndarray) -> Dict[str, Any]:
-        """Detect focus state from frame using OpenCV"""
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        
-        # Detect faces
-        faces = self.face_cascade.detectMultiScale(gray, 1.1, 4)
-        
-        if len(faces) == 0:
-            return {
-                'state': 'unknown',
-                'confidence': 0.0,
-                'head_pose': {'pitch': 0, 'yaw': 0, 'roll': 0},
-                'eye_aspect_ratio': 0.0,
-                'landmarks_detected': False,
-                'face_detected': False
-            }
-        
-        # Use the largest face
-        face = max(faces, key=lambda f: f[2] * f[3])
-        x, y, w, h = face
-        
-        # Extract face region
-        face_roi_gray = gray[y:y+h, x:x+w]
-        face_roi_color = frame[y:y+h, x:x+w]
-        
-        # Detect eyes in the face region
-        eyes = self.eye_cascade.detectMultiScale(face_roi_gray, 1.1, 3)
-        
-        # Calculate eye aspect ratio
-        eye_aspect_ratio = 0.0
-        if len(eyes) >= 2:
-            # Use the two largest eyes
-            eyes_sorted = sorted(eyes, key=lambda e: e[2] * e[3], reverse=True)[:2]
-            eye_ratios = []
-            
-            for (ex, ey, ew, eh) in eyes_sorted:
-                eye_region = face_roi_gray[ey:ey+eh, ex:ex+ew]
-                ratio = self.calculate_eye_aspect_ratio(eye_region)
-                eye_ratios.append(ratio)
-            
-            eye_aspect_ratio = sum(eye_ratios) / len(eye_ratios)
-        
-        # Estimate head pose
-        head_pose = self.estimate_head_pose(face, frame.shape)
-        
-        # Determine state based on measurements
-        current_time = datetime.now()
-        state = 'unknown'  # Initialize state variable
-        
-        # Check for drowsiness (eyes closed/small)
-        if eye_aspect_ratio < self.DROWSY_EYE_THRESHOLD and len(eyes) < 2:
-            if self.eye_closed_start is None:
-                self.eye_closed_start = current_time
-                state = 'focused'  # Initial grace period
-            elif (current_time - self.eye_closed_start).total_seconds() > self.DROWSY_TIME_THRESHOLD:
-                state = 'drowsy'
-            else:
-                state = 'focused'  # Still in grace period
-        else:
-            self.eye_closed_start = None
-            
-            # Check for distraction (face position)
-            if abs(head_pose['yaw']) > 25:  # Looking sideways
-                state = 'relaxing'
-            elif head_pose['pitch'] > 15:  # Looking down
-                state = 'distracted'
-            elif abs(head_pose['pitch']) > 20:  # Looking up
-                state = 'relaxing'
-            else:
-                state = 'focused'
-        
-        # Calculate confidence based on face size and detection quality
-        face_area = w * h
-        frame_area = frame.shape[0] * frame.shape[1]
-        face_ratio = face_area / frame_area
-        
-        # Higher confidence for larger, well-positioned faces
-        confidence = min(1.0, max(0.3, face_ratio * 10))
-        
-        return {
-            'state': state,
-            'confidence': confidence,
-            'head_pose': head_pose,
-            'eye_aspect_ratio': eye_aspect_ratio,
-            'landmarks_detected': len(eyes) >= 2,
-            'face_detected': True,
-            'face_area_ratio': face_ratio,
-            'eyes_detected': len(eyes),
-            'timestamp': current_time.isoformat()
-        }
+# Enhanced detector is imported from enhanced_detector.py
 
 class CameraManager:
-    """Manages camera capture and processing"""
+    """Manages camera capture and processing with enhanced AI detection"""
     
     def __init__(self):
         self.cap = None
         self.is_running = False
-        self.detector = OpenCVStateDetector()
+        self.detector = EnhancedStateDetector()
         
     def start_camera(self, camera_index: int = 0) -> bool:
         """Start camera capture"""
@@ -271,7 +119,7 @@ class CameraManager:
         
         color = color_map.get(state, (128, 128, 128))
         
-        # Draw state text
+        # Draw state text with enhanced info
         cv2.putText(frame, f"State: {state.upper()}", (10, 30), 
                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
         
@@ -280,12 +128,27 @@ class CameraManager:
         cv2.putText(frame, f"Confidence: {confidence:.2f}", (10, 60), 
                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
         
-        # Draw head pose
+        # Draw head pose angles
         head_pose = detection['head_pose']
-        cv2.putText(frame, f"Yaw: {head_pose['yaw']:.1f}", (10, 90), 
+        cv2.putText(frame, f"Yaw: {head_pose['yaw']:.1f}°", (10, 90), 
                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-        cv2.putText(frame, f"Pitch: {head_pose['pitch']:.1f}", (10, 110), 
+        cv2.putText(frame, f"Pitch: {head_pose['pitch']:.1f}°", (10, 110), 
                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+        
+        # Draw Eye Aspect Ratio
+        ear = detection.get('eye_aspect_ratio', 0)
+        cv2.putText(frame, f"EAR: {ear:.3f}", (10, 130), 
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+        
+        # Draw active timers
+        if 'timers' in detection:
+            timers = detection['timers']
+            y_offset = 150
+            for timer_name, timer_value in timers.items():
+                if timer_value > 0:
+                    cv2.putText(frame, f"{timer_name}: {timer_value:.1f}s", (10, y_offset), 
+                               cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 0), 1)
+                    y_offset += 20
 
 # Global camera manager
 camera_manager = CameraManager()
@@ -313,6 +176,19 @@ async def start_camera():
 async def stop_camera():
     camera_manager.stop_camera()
     return {"success": True, "message": "Camera stopped"}
+
+@app.get("/analytics/session")
+async def get_session_analytics():
+    """Get current session analytics and state history"""
+    return camera_manager.detector.get_session_summary()
+
+@app.post("/analytics/reset")
+async def reset_session():
+    """Reset the current session analytics"""
+    camera_manager.detector.state_history = []
+    camera_manager.detector.current_state = 'focused'
+    camera_manager.detector.state_start_time = datetime.now()
+    return {"success": True, "message": "Session reset"}
 
 @app.websocket("/ws/camera")
 async def websocket_camera(websocket: WebSocket):
@@ -350,10 +226,13 @@ async def websocket_camera(websocket: WebSocket):
 
 if __name__ == "__main__":
     import uvicorn
-    print("🐍 Starting AI Study Assistant Backend (OpenCV)")
-    print("📹 Camera processing: OpenCV Haar Cascades")  
+    print("� Starting AI Study Assistant Backend (Enhanced)")
+    print("📹 Computer Vision: Advanced OpenCV with PnP head pose estimation")  
+    print("🧠 AI Features: State machine with timer-based transitions")
+    print("📊 Analytics: Session tracking and productivity insights")
     print("🌐 Server: http://127.0.0.1:8000")
     print("🔌 WebSocket: ws://127.0.0.1:8000/ws/camera")
-    print("💡 Features: Face detection, Eye tracking, Head pose estimation")
+    print("� Analytics API: /analytics/session")
+    print("💡 States: FOCUSED → DISTRACTED → RELAXING → DROWSY")
     print("")
     uvicorn.run(app, host="127.0.0.1", port=8000, log_level="info")
