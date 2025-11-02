@@ -75,12 +75,53 @@ export default function Home() {
           </div>
         </div>
 
+        {/* Navigation to New Features */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-8">
+          <div className="bg-linear-to-r from-green-500 to-blue-500 text-white rounded-lg p-6">
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 className="text-xl font-bold mb-1">
+                  🚀 Study Lock Mode
+                </h2>
+                <p className="text-sm opacity-90">
+                  Privacy-first study sessions with configurable AI
+                </p>
+              </div>
+              <a 
+                href="/study-mode"
+                className="bg-white text-blue-600 px-4 py-2 rounded-lg font-semibold hover:bg-gray-100 transition-colors text-sm"
+              >
+                Launch →
+              </a>
+            </div>
+          </div>
+          
+          <div className="bg-linear-to-r from-purple-500 to-pink-500 text-white rounded-lg p-6">
+            <div className="flex items-center justify-between">
+              <div>
+                <h2 className="text-xl font-bold mb-1">
+                  🔧 Detection Calibration
+                </h2>
+                <p className="text-sm opacity-90">
+                  Test and optimize AI accuracy for your setup
+                </p>
+              </div>
+              <a 
+                href="/calibration"
+                className="bg-white text-purple-600 px-4 py-2 rounded-lg font-semibold hover:bg-gray-100 transition-colors text-sm"
+              >
+                Calibrate →
+              </a>
+            </div>
+          </div>
+        </div>
+
         {/* Control Panel */}
         <div className="bg-white dark:bg-gray-800 rounded-lg shadow-lg p-6 mb-8">
           <div className="flex items-center justify-between mb-4">
             <div>
               <h2 className="text-xl font-semibold text-gray-900 dark:text-white">
-                Python AI Detection
+                Python AI Detection (Demo Mode)
               </h2>
               <p className="text-sm text-gray-600 dark:text-gray-400">
                 Backend: FastAPI + OpenCV + Real Face Detection

@@ -20,7 +20,7 @@ class EnhancedStateDetector:
     - State machine with timer-based transitions
     """
     
-    def __init__(self):
+    def __init__(self, ai_thresholds=None):
         # Load OpenCV cascade classifiers
         self.face_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_frontalface_default.xml')
         self.eye_cascade = cv2.CascadeClassifier(cv2.data.haarcascades + 'haarcascade_eye.xml')
@@ -51,18 +51,43 @@ class EnhancedStateDetector:
         # Timer tracking
         self.last_frame_time = datetime.now()
         
-        # Thresholds (configurable)
-        self.DROWSY_EAR_THRESHOLD = 0.25
-        self.DROWSY_TIME_THRESHOLD = 3.0  # seconds (reduced for demo)
-        
-        self.DISTRACTED_PITCH_THRESHOLD = 20  # degrees looking down
-        self.DISTRACTED_TIME_THRESHOLD = 5.0  # seconds
-        
-        self.RELAXING_YAW_THRESHOLD = 30  # degrees looking sideways
-        self.RELAXING_TIME_THRESHOLD = 8.0  # seconds
+        # Configure thresholds (use provided or defaults)
+        self.configure_thresholds(ai_thresholds)
         
         # State history for logging
         self.state_history = []
+        
+        # Session tracking
+        self.session_active = False
+        self.session_start_time = None
+    
+    def configure_thresholds(self, ai_thresholds=None):
+        """Configure AI detection thresholds from AIThresholds object or use defaults"""
+        if ai_thresholds:
+            self.DROWSY_EAR_THRESHOLD = ai_thresholds.drowsy_ear_threshold
+            self.DROWSY_TIME_THRESHOLD = ai_thresholds.drowsy_time_threshold
+            self.DROWSY_GRACE_PERIOD = ai_thresholds.drowsy_grace_period
+            
+            self.DISTRACTED_PITCH_THRESHOLD = ai_thresholds.distracted_pitch_threshold
+            self.DISTRACTED_TIME_THRESHOLD = ai_thresholds.distracted_time_threshold
+            self.DISTRACTED_GRACE_PERIOD = ai_thresholds.distracted_grace_period
+            
+            self.RELAXING_YAW_THRESHOLD = ai_thresholds.relaxing_yaw_threshold
+            self.RELAXING_TIME_THRESHOLD = ai_thresholds.relaxing_time_threshold
+            self.RELAXING_GRACE_PERIOD = ai_thresholds.relaxing_grace_period
+        else:
+            # Default thresholds - More realistic and lenient
+            self.DROWSY_EAR_THRESHOLD = 0.20  # More lenient threshold
+            self.DROWSY_TIME_THRESHOLD = 25.0  # 25 seconds before drowsy alert
+            self.DROWSY_GRACE_PERIOD = 5.0
+            
+            self.DISTRACTED_PITCH_THRESHOLD = 30  # degrees looking down (phone checking)
+            self.DISTRACTED_TIME_THRESHOLD = 15.0  # 15 seconds for phone distraction
+            self.DISTRACTED_GRACE_PERIOD = 15.0
+            
+            self.RELAXING_YAW_THRESHOLD = 25  # degrees looking sideways/up
+            self.RELAXING_TIME_THRESHOLD = 30.0  # 30 seconds for eye relaxing
+            self.RELAXING_GRACE_PERIOD = 30.0
 
     def initialize_camera_matrix(self, frame_shape: Tuple[int, int]):
         """Initialize camera matrix based on frame dimensions"""

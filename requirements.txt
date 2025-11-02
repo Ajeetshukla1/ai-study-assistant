@@ -7,7 +7,7 @@ websockets==12.0
 
 # Computer Vision & AI
 opencv-python==4.8.1.78
-mediapipe==0.10.7
+mediapipe==0.10.21
 numpy==1.24.3
 
 # Image processing and streaming

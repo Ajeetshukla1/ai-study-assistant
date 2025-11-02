@@ -18,11 +18,22 @@ from fastapi.middleware.cors import CORSMiddleware
 from datetime import datetime
 import logging
 import math
-from enhanced_detector import EnhancedStateDetector
 
-# Configure logging
+# Configure logging first
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+from ai.detectors import EnhancedStateDetector
+from ai.config import SessionConfig, SessionManager, PRESET_CONFIGS, AIThresholds
+
+# Try to import MediaPipe detector, fallback to OpenCV if not available
+try:
+    from ai.detectors import PreciseStateDetector
+    MEDIAPIPE_AVAILABLE = True
+    logger.info("MediaPipe detector available")
+except ImportError as e:
+    MEDIAPIPE_AVAILABLE = False
+    logger.warning(f"MediaPipe not available: {e}. Using OpenCV detector only.")
 
 app = FastAPI(title="AI Study Assistant Backend")
 
@@ -35,7 +46,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Enhanced detector is imported from enhanced_detector.py
+# Global session manager
+current_session_manager = None
 
 class CameraManager:
     """Manages camera capture and processing with enhanced AI detection"""
@@ -43,7 +55,48 @@ class CameraManager:
     def __init__(self):
         self.cap = None
         self.is_running = False
-        self.detector = EnhancedStateDetector()
+        # Use MediaPipe if available, otherwise fallback to OpenCV
+        if MEDIAPIPE_AVAILABLE:
+            try:
+                self.detector = PreciseStateDetector()
+                self.use_precise_detector = True
+                logger.info("Using MediaPipe Precise Detector")
+            except Exception as e:
+                logger.warning(f"MediaPipe detector failed to initialize: {e}")
+                self.detector = EnhancedStateDetector()
+                self.use_precise_detector = False
+                logger.info("Fallback to OpenCV Basic Detector")
+        else:
+            self.detector = EnhancedStateDetector()
+            self.use_precise_detector = False
+            logger.info("Using OpenCV Basic Detector (MediaPipe not available)")
+    
+    def switch_detector(self, use_precise: bool = True):
+        """Switch between precise MediaPipe detector and basic OpenCV detector"""
+        if not MEDIAPIPE_AVAILABLE and use_precise:
+            logger.warning("MediaPipe not available. Cannot switch to precise detector.")
+            return False
+            
+        try:
+            if use_precise and not self.use_precise_detector and MEDIAPIPE_AVAILABLE:
+                self.detector = PreciseStateDetector()
+                self.use_precise_detector = True
+                logger.info("Switched to MediaPipe Precise Detector")
+            elif not use_precise and self.use_precise_detector:
+                self.detector = EnhancedStateDetector()
+                self.use_precise_detector = False  
+                logger.info("Switched to OpenCV Basic Detector")
+            return True
+        except Exception as e:
+            logger.error(f"Error switching detector: {e}")
+            # Fallback to basic detector if MediaPipe fails
+            self.detector = EnhancedStateDetector()
+            self.use_precise_detector = False
+            return False
+    
+    def update_detector_config(self, ai_thresholds: AIThresholds):
+        """Update AI detector with new thresholds"""
+        self.detector.configure_thresholds(ai_thresholds)
         
     def start_camera(self, camera_index: int = 0) -> bool:
         """Start camera capture"""
@@ -90,7 +143,10 @@ class CameraManager:
         detection_result = self.detector.detect_state(frame)
         
         # Draw detection results on frame for visualization
-        self.draw_detection_overlay(frame, detection_result)
+        if self.use_precise_detector:
+            self.detector.draw_debug_overlay(frame, detection_result)
+        else:
+            self.draw_detection_overlay(frame, detection_result)
         
         # Encode frame as base64 for web transmission
         _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
@@ -177,6 +233,60 @@ async def stop_camera():
     camera_manager.stop_camera()
     return {"success": True, "message": "Camera stopped"}
 
+@app.get("/detector/info")
+async def get_detector_info():
+    """Get current detector information and capabilities"""
+    return {
+        "current_detector": "MediaPipe Precise" if camera_manager.use_precise_detector else "OpenCV Basic",
+        "precise_available": MEDIAPIPE_AVAILABLE,
+        "python_version": "3.13.2 (MediaPipe requires 3.9-3.12)" if not MEDIAPIPE_AVAILABLE else "Compatible",
+        "features": {
+            "MediaPipe Precise": {
+                "accuracy": "High (468 facial landmarks)",
+                "head_pose": "Precise PnP solver with 3D model",
+                "eye_tracking": "Accurate EAR calculation",
+                "performance": "Medium (more CPU intensive)",
+                "description": "Uses Google MediaPipe for high-precision detection"
+            },
+            "OpenCV Basic": {
+                "accuracy": "Medium (Haar cascade estimation)",
+                "head_pose": "Approximate geometric calculation", 
+                "eye_tracking": "Basic eye detection",
+                "performance": "Fast (lightweight)",
+                "description": "Uses OpenCV Haar cascades for basic detection"
+            }
+        }
+    }
+
+@app.post("/detector/switch")
+async def switch_detector(request: dict):
+    """Switch between precise and basic detector"""
+    use_precise = request.get("use_precise", True)
+    
+    if not MEDIAPIPE_AVAILABLE and use_precise:
+        return {
+            "success": False,
+            "error": "MediaPipe not available. Please install Python 3.9-3.12 and MediaPipe package.",
+            "current_detector": "OpenCV Basic",
+            "recommendation": "Downgrade to Python 3.11 or 3.12 for MediaPipe support"
+        }
+    
+    try:
+        success = camera_manager.switch_detector(use_precise)
+        detector_name = "MediaPipe Precise" if camera_manager.use_precise_detector else "OpenCV Basic"
+        
+        return {
+            "success": success,
+            "message": f"Switched to {detector_name}" if success else "Failed to switch detector",
+            "current_detector": detector_name
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "error": f"Failed to switch detector: {str(e)}",
+            "current_detector": "MediaPipe Precise" if camera_manager.use_precise_detector else "OpenCV Basic"
+        }
+
 @app.get("/analytics/session")
 async def get_session_analytics():
     """Get current session analytics and state history"""
@@ -189,6 +299,85 @@ async def reset_session():
     camera_manager.detector.current_state = 'focused'
     camera_manager.detector.state_start_time = datetime.now()
     return {"success": True, "message": "Session reset"}
+
+# New Session Management Endpoints
+
+@app.get("/session/presets")
+async def get_session_presets():
+    """Get available session presets"""
+    return {
+        "presets": {
+            name: config.to_dict() 
+            for name, config in PRESET_CONFIGS.items()
+        }
+    }
+
+@app.post("/session/start")
+async def start_study_session(config_data: dict):
+    """Start a new study session with custom configuration"""
+    global current_session_manager
+    
+    try:
+        # Create session config from request data
+        config = SessionConfig.from_dict(config_data)
+        current_session_manager = SessionManager(config)
+        
+        # Update AI detector with new thresholds
+        camera_manager.update_detector_config(config.ai_thresholds)
+        
+        # Start the session
+        session_info = current_session_manager.start_session()
+        
+        logger.info(f"Started study session: {session_info['session_id']}")
+        
+        return {
+            "success": True,
+            "session": session_info
+        }
+        
+    except Exception as e:
+        logger.error(f"Error starting session: {e}")
+        return {"success": False, "error": str(e)}
+
+@app.get("/session/status")
+async def get_session_status():
+    """Get current session status"""
+    if not current_session_manager:
+        return {"active": False}
+    
+    return current_session_manager.get_session_status()
+
+@app.post("/session/pause")
+async def pause_session():
+    """Pause the current session"""
+    if current_session_manager:
+        current_session_manager.is_paused = True
+        return {"success": True, "message": "Session paused"}
+    return {"success": False, "error": "No active session"}
+
+@app.post("/session/resume")
+async def resume_session():
+    """Resume the current session"""
+    if current_session_manager:
+        current_session_manager.is_paused = False
+        return {"success": True, "message": "Session resumed"}
+    return {"success": False, "error": "No active session"}
+
+@app.post("/session/stop")
+async def stop_session():
+    """Stop the current session"""
+    global current_session_manager
+    if current_session_manager:
+        current_session_manager.is_active = False
+        session_summary = camera_manager.detector.get_session_summary()
+        current_session_manager = None
+        
+        return {
+            "success": True, 
+            "message": "Session completed",
+            "summary": session_summary
+        }
+    return {"success": False, "error": "No active session"}
 
 @app.websocket("/ws/camera")
 async def websocket_camera(websocket: WebSocket):
